@@ -19,11 +19,8 @@ from io import BytesIO
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-# ──────────────────────────────────────────
-# CONFIG
-# ──────────────────────────────────────────
-API_URL     = "https://aileaders.uz/api/v1/check/certificates"
-DELAY_SEC   = 0.7
+API_URL = "https://aileaders.uz/api/v1/check/certificates"
+DELAY_SEC = 0.7
 SKIP_SHEETS = {"ЖАМИ СЕРТИФИКАТ ОЛГАНЛАР", "Лист1"}
 
 REPORT_COLS = [
@@ -36,9 +33,7 @@ REPORT_COLS = [
     "Izoh"
 ]
 
-# ──────────────────────────────────────────
-# cURL DAN COOKIE AJRATISH
-# ──────────────────────────────────────────
+
 def parse_curl(curl_text: str) -> dict:
     result = {"cookie": "", "user_agent": ""}
 
@@ -49,20 +44,20 @@ def parse_curl(curl_text: str) -> dict:
         cookie_match = re.search(r"-H\s+'cookie:\s*([^']+)'", curl_text, re.IGNORECASE)
     if not cookie_match:
         cookie_match = re.search(r'-H\s+"cookie:\s*([^"]+)"', curl_text, re.IGNORECASE)
+
     if cookie_match:
         result["cookie"] = cookie_match.group(1).strip()
 
     ua_match = re.search(r"-H\s+'user-agent:\s*([^']+)'", curl_text, re.IGNORECASE)
     if not ua_match:
-        ua_match = re.search(r"-H\s+\"user-agent:\s*([^\"]+)\"", curl_text, re.IGNORECASE)
+        ua_match = re.search(r'-H\s+"user-agent:\s*([^"]+)"', curl_text, re.IGNORECASE)
+
     if ua_match:
         result["user_agent"] = ua_match.group(1).strip()
 
     return result
 
-# ──────────────────────────────────────────
-# EXCEL O'QISH
-# ──────────────────────────────────────────
+
 def read_excel(file) -> pd.DataFrame:
     xls = pd.ExcelFile(file, engine="openpyxl")
     frames = []
@@ -80,7 +75,7 @@ def read_excel(file) -> pd.DataFrame:
         df.columns = df.columns.map(str).str.strip()
 
         pinfl_col = next(
-            (c for c in df.columns if "ПИНФЛ" in c.upper() or "PINFL" in c.upper()),
+            (c for c in df.columns if "ПИНФЛ" in str(c).upper() or "PINFL" in str(c).upper()),
             None
         )
 
@@ -100,13 +95,12 @@ def read_excel(file) -> pd.DataFrame:
 
         df["Maktab"] = sheet
         df = df[df["PINFL"].str.len() >= 10].copy()
+
         frames.append(df)
 
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
-# ──────────────────────────────────────────
-# BITTA PINFL TEKSHIRISH
-# ──────────────────────────────────────────
+
 def check_pinfl(pinfl: str, session: requests.Session) -> dict:
     empty = {
         "holat": "",
@@ -141,9 +135,12 @@ def check_pinfl(pinfl: str, session: requests.Session) -> dict:
 
             for c in courses:
                 nomi = (
-                    c.get("name")
+                    c.get("courseName")
+                    or c.get("name")
                     or c.get("title")
-                    or c.get("courseName")
+                    or c.get("course_title")
+                    or c.get("course", {}).get("name")
+                    or c.get("course", {}).get("title")
                     or "Noma'lum kurs"
                 )
 
@@ -151,18 +148,51 @@ def check_pinfl(pinfl: str, session: requests.Session) -> dict:
                     c.get("partner")
                     or c.get("partnerName")
                     or c.get("provider")
+                    or c.get("organization")
+                    or c.get("course", {}).get("partner")
+                    or c.get("course", {}).get("partnerName")
                     or ""
                 )
 
-                progress = c.get("progress", "")
-                davomiylik = c.get("duration", "")
-                yozilgan_sana = c.get("createdAt") or c.get("startedAt") or ""
-                tugallangan_sana = c.get("completedAt") or c.get("finishedAt") or ""
-                ochirilgan_sana = c.get("deletedAt") or c.get("removedAt") or ""
+                progress = (
+                    c.get("progress")
+                    or c.get("progressPercent")
+                    or c.get("percentage")
+                    or c.get("percent")
+                    or ""
+                )
+
+                davomiylik = (
+                    c.get("duration")
+                    or c.get("courseDuration")
+                    or c.get("hours")
+                    or ""
+                )
+
+                yozilgan_sana = (
+                    c.get("enrolledAt")
+                    or c.get("createdAt")
+                    or c.get("startedAt")
+                    or c.get("registrationDate")
+                    or ""
+                )
+
+                tugallangan_sana = (
+                    c.get("completedAt")
+                    or c.get("finishedAt")
+                    or c.get("completionDate")
+                    or ""
+                )
+
+                ochirilgan_sana = (
+                    c.get("deletedAt")
+                    or c.get("removedAt")
+                    or ""
+                )
 
                 tugallangan = "Ha" if c.get("isCompleted") else "Yo‘q"
 
-                qator = f"Kurs: {nomi}"
+                qator = f"Kurs nomi: {nomi}"
 
                 if hamkor:
                     qator += f"; Hamkor: {hamkor}"
@@ -177,7 +207,8 @@ def check_pinfl(pinfl: str, session: requests.Session) -> dict:
                 if ochirilgan_sana:
                     qator += f"; O‘chirilgan sana: {ochirilgan_sana}"
 
-                qator += f"; Tugallangan: {tugallangan}"
+                qator += f"; Sertifikat olgan: {tugallangan}"
+
                 kurslar.append(qator)
 
             return {
@@ -214,9 +245,7 @@ def check_pinfl(pinfl: str, session: requests.Session) -> dict:
     except Exception as e:
         return {**empty, "holat": "🔴 Tekshirishda xato", "xato": str(e)[:80]}
 
-# ──────────────────────────────────────────
-# EXCEL FORMATLASH
-# ──────────────────────────────────────────
+
 def style_excel(writer):
     wb = writer.book
 
@@ -246,11 +275,9 @@ def style_excel(writer):
                 value = "" if cell.value is None else str(cell.value)
                 max_len = max(max_len, len(value))
 
-            ws.column_dimensions[col_letter].width = min(max(max_len + 3, 12), 55)
+            ws.column_dimensions[col_letter].width = min(max(max_len + 3, 12), 60)
 
-# ──────────────────────────────────────────
-# HISOBOT EXCEL YARATISH
-# ──────────────────────────────────────────
+
 def build_report_excel(df_all: pd.DataFrame, result_df: pd.DataFrame, summary: pd.DataFrame) -> BytesIO:
     export_df = df_all.copy()
 
@@ -259,9 +286,7 @@ def build_report_excel(df_all: pd.DataFrame, result_df: pd.DataFrame, summary: p
     for col in REPORT_COLS:
         export_df[col] = export_df["_RID_"].map(lambda x: result_map.get(x, {}).get(col, ""))
 
-    hidden_cols = ["_RID_", "_PINFL_COL_"]
-
-    for col in hidden_cols:
+    for col in ["_RID_", "_PINFL_COL_"]:
         if col in export_df.columns:
             export_df = export_df.drop(columns=[col])
 
@@ -272,6 +297,7 @@ def build_report_excel(df_all: pd.DataFrame, result_df: pd.DataFrame, summary: p
             cols.remove(col)
 
     pinfl_index = None
+
     for i, col in enumerate(cols):
         if "ПИНФЛ" in str(col).upper() or "PINFL" in str(col).upper():
             pinfl_index = i
@@ -293,9 +319,7 @@ def build_report_excel(df_all: pd.DataFrame, result_df: pd.DataFrame, summary: p
     out.seek(0)
     return out
 
-# ──────────────────────────────────────────
-# STREAMLIT UI
-# ──────────────────────────────────────────
+
 st.set_page_config(page_title="AI Leaders PINFL Checker", page_icon="🎓", layout="wide")
 
 st.markdown("""
@@ -377,7 +401,6 @@ st.markdown("""
 Excel fayldagi barcha PINFLlarni `aileaders.uz` orqali avtomatik tekshiradi.
 """)
 
-# ── 1-QADAM: cURL ──
 st.subheader("🔐 1-qadam: cURL joylashtiring")
 
 with st.expander("📋 cURL qanday olish kerak? (bosing)", expanded=True):
@@ -403,6 +426,7 @@ curl_ok = False
 
 if curl_input.strip():
     parsed = parse_curl(curl_input)
+
     if parsed["cookie"] and "HWWAFSESID" in parsed["cookie"]:
         st.success("✅ cURL muvaffaqiyatli o'qildi! Cookie topildi.")
         curl_ok = True
@@ -412,7 +436,6 @@ if curl_input.strip():
 
 st.divider()
 
-# ── 2-QADAM: EXCEL ──
 st.subheader("📂 2-qadam: Excel yuklang")
 uploaded = st.file_uploader("Excel fayl", type=["xlsx"], label_visibility="collapsed")
 
@@ -439,14 +462,12 @@ if uploaded:
 
     st.divider()
 
-    # ── 3-QADAM: TEKSHIRISH ──
     st.subheader("🚀 3-qadam: Tekshirishni boshlash")
 
     if not curl_ok:
         st.warning("⚠️ Avval 1-qadamda cURL ni joylashtiring!")
 
     if curl_ok and st.button("🚀 Tekshirishni boshlash", type="primary"):
-
         session = requests.Session()
         session.headers.update({
             "User-Agent": parsed.get("user_agent") or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
@@ -508,7 +529,6 @@ if uploaded:
 
         result_df = pd.DataFrame(results)
 
-        # Statistika
         st.subheader("📊 Natijalar")
         c1, c2, c3, c4 = st.columns(4)
 
@@ -532,7 +552,6 @@ if uploaded:
 
         st.dataframe(result_df.drop(columns=["_RID_"]), use_container_width=True)
 
-        # Maktab xulosasi
         st.subheader("🏫 Maktab bo'yicha hisobot")
 
         summary = (
@@ -563,7 +582,6 @@ if uploaded:
 
         st.dataframe(summary, use_container_width=True)
 
-        # Excel yuklab olish
         out = build_report_excel(df_all, result_df, summary)
 
         st.download_button(
