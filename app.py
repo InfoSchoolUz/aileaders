@@ -1,6 +1,7 @@
 """
 AI Leaders PINFL Checker — To'liq avtomatik
-============================================
+Developer: Azamat Madrimov
+
 requirements.txt:
     streamlit
     openpyxl
@@ -25,7 +26,15 @@ API_URL     = "https://aileaders.uz/api/v1/check/certificates"
 DELAY_SEC   = 0.7
 SKIP_SHEETS = {"ЖАМИ СЕРТИФИКАТ ОЛГАНЛАР", "Лист1"}
 
-REPORT_COLS = ["Holat", "Ism (sayt)", "Email", "Kurslar", "Yakunlangan", "Xato"]
+REPORT_COLS = [
+    "Tekshiruv holati",
+    "Saytdagi F.I.Sh.",
+    "Email",
+    "Kurslar soni",
+    "Yakunlangan kurslar",
+    "Kurslar tafsiloti",
+    "Izoh"
+]
 
 # ──────────────────────────────────────────
 # cURL DAN COOKIE AJRATISH
@@ -90,7 +99,6 @@ def read_excel(file) -> pd.DataFrame:
         )
 
         df["Maktab"] = sheet
-
         df = df[df["PINFL"].str.len() >= 10].copy()
         frames.append(df)
 
@@ -100,41 +108,111 @@ def read_excel(file) -> pd.DataFrame:
 # BITTA PINFL TEKSHIRISH
 # ──────────────────────────────────────────
 def check_pinfl(pinfl: str, session: requests.Session) -> dict:
-    empty = {"holat": "", "ism": "", "email": "", "kurslar": 0, "yakunlangan": 0, "xato": ""}
+    empty = {
+        "holat": "",
+        "ism": "",
+        "email": "",
+        "kurslar": 0,
+        "yakunlangan": 0,
+        "kurs_tafsiloti": "",
+        "xato": ""
+    }
+
     try:
         r = session.get(API_URL, params={"pinfl": pinfl}, timeout=15)
 
-        if r.status_code in (200, 304):
+        if r.status_code == 200:
             try:
                 data = r.json()
             except Exception:
                 return {**empty, "holat": "⚠️ JSON xato", "xato": r.text[:80]}
 
-            courses     = data.get("courses", [])
-            completed   = sum(1 for c in courses if c.get("isCompleted"))
-            has_courses = data.get("hasCourses", False)
+            courses = data.get("courses", [])
+            completed = sum(1 for c in courses if c.get("isCompleted"))
+
+            if completed > 0:
+                holat = "✅ Sertifikat olgan"
+            elif len(courses) > 0:
+                holat = "⚠️ PINFL bor, kurs mavjud, sertifikat olinmagan"
+            else:
+                holat = "⚠️ PINFL bor, lekin kurs topilmadi"
+
+            kurslar = []
+
+            for c in courses:
+                nomi = (
+                    c.get("name")
+                    or c.get("title")
+                    or c.get("courseName")
+                    or "Noma'lum kurs"
+                )
+
+                hamkor = (
+                    c.get("partner")
+                    or c.get("partnerName")
+                    or c.get("provider")
+                    or ""
+                )
+
+                progress = c.get("progress", "")
+                davomiylik = c.get("duration", "")
+                yozilgan_sana = c.get("createdAt") or c.get("startedAt") or ""
+                tugallangan_sana = c.get("completedAt") or c.get("finishedAt") or ""
+                ochirilgan_sana = c.get("deletedAt") or c.get("removedAt") or ""
+
+                tugallangan = "Ha" if c.get("isCompleted") else "Yo‘q"
+
+                qator = f"Kurs: {nomi}"
+
+                if hamkor:
+                    qator += f"; Hamkor: {hamkor}"
+                if progress != "":
+                    qator += f"; Progress: {progress}%"
+                if davomiylik:
+                    qator += f"; Davomiyligi: {davomiylik}"
+                if yozilgan_sana:
+                    qator += f"; Yozilgan sana: {yozilgan_sana}"
+                if tugallangan_sana:
+                    qator += f"; Tugallangan sana: {tugallangan_sana}"
+                if ochirilgan_sana:
+                    qator += f"; O‘chirilgan sana: {ochirilgan_sana}"
+
+                qator += f"; Tugallangan: {tugallangan}"
+                kurslar.append(qator)
 
             return {
-                "holat":       "✅ Sertifikat bor" if has_courses else "⚠️ Ro'yxatda bor, kurs yo'q",
-                "ism":         data.get("fullName", ""),
-                "email":       data.get("email", ""),
-                "kurslar":     len(courses),
+                "holat": holat,
+                "ism": data.get("fullName", ""),
+                "email": data.get("email", ""),
+                "kurslar": len(courses),
                 "yakunlangan": completed,
-                "xato":        "",
+                "kurs_tafsiloti": "\n".join(kurslar),
+                "xato": "",
             }
 
         elif r.status_code == 404:
-            return {**empty, "holat": "❌ Topilmadi"}
+            return {**empty, "holat": "❌ PINFL ro‘yxatdan o‘tmagan"}
+
         elif r.status_code == 401:
             return {**empty, "holat": "🔐 Cookie eskirgan", "xato": "Cookie yangilang"}
+
         elif r.status_code == 429:
             time.sleep(15)
-            return {**empty, "holat": "⏳ Rate limit", "xato": "Keyingi PINFL dan davom eting"}
+            return {
+                **empty,
+                "holat": "⏳ So‘rovlar limiti oshib ketdi",
+                "xato": "Keyingi PINFL dan davom eting"
+            }
+
         else:
-            return {**empty, "holat": f"🔴 {r.status_code}", "xato": r.text[:80]}
+            return {
+                **empty,
+                "holat": f"🔴 Server xatosi: {r.status_code}",
+                "xato": r.text[:80]
+            }
 
     except Exception as e:
-        return {**empty, "holat": "🔴 Xato", "xato": str(e)[:80]}
+        return {**empty, "holat": "🔴 Tekshirishda xato", "xato": str(e)[:80]}
 
 # ──────────────────────────────────────────
 # EXCEL FORMATLASH
@@ -168,7 +246,7 @@ def style_excel(writer):
                 value = "" if cell.value is None else str(cell.value)
                 max_len = max(max_len, len(value))
 
-            ws.column_dimensions[col_letter].width = min(max(max_len + 3, 12), 45)
+            ws.column_dimensions[col_letter].width = min(max(max_len + 3, 12), 55)
 
 # ──────────────────────────────────────────
 # HISOBOT EXCEL YARATISH
@@ -187,7 +265,6 @@ def build_report_excel(df_all: pd.DataFrame, result_df: pd.DataFrame, summary: p
         if col in export_df.columns:
             export_df = export_df.drop(columns=[col])
 
-    # PINFL ustunidan keyin hisobot ustunlarini joylash
     cols = list(export_df.columns)
 
     for col in REPORT_COLS:
@@ -321,8 +398,8 @@ curl_input = st.text_area(
     height=120,
 )
 
-parsed   = {}
-curl_ok  = False
+parsed = {}
+curl_ok = False
 
 if curl_input.strip():
     parsed = parse_curl(curl_input)
@@ -352,6 +429,7 @@ if uploaded:
     with st.expander("🏫 Maktab filtri (ixtiyoriy)"):
         maktablar = sorted(df_all["Maktab"].unique().tolist())
         tanlangan = st.multiselect("Tekshiriladigan maktablar (bo'sh = hammasi)", maktablar)
+
         if tanlandan := tanlangan:
             df_all = df_all[df_all["Maktab"].isin(tanlandan)].copy()
             st.info(f"Tanlangan: {len(df_all)} ta o'quvchi")
@@ -372,16 +450,16 @@ if uploaded:
         session = requests.Session()
         session.headers.update({
             "User-Agent": parsed.get("user_agent") or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
-            "Accept":     "*/*",
-            "Referer":    "https://aileaders.uz/auth/login/check",
-            "Cookie":     parsed["cookie"],
+            "Accept": "*/*",
+            "Referer": "https://aileaders.uz/auth/login/check",
+            "Cookie": parsed["cookie"],
         })
 
         progress_bar = st.progress(0)
-        status_text  = st.empty()
-        results      = []
-        total        = len(df_all)
-        cookie_dead  = False
+        status_text = st.empty()
+        results = []
+        total = len(df_all)
+        cookie_dead = False
 
         for i, (_, row) in enumerate(df_all.iterrows(), 1):
             pinfl = str(row["PINFL"])
@@ -405,16 +483,17 @@ if uploaded:
             fio = row.get(name_col, "") if name_col else ""
 
             results.append({
-                "_RID_":       row["_RID_"],
-                "Maktab":      maktab,
-                "F.I.Sh.":     fio,
-                "PINFL":       pinfl,
-                "Holat":       res["holat"],
-                "Ism (sayt)":  res["ism"],
-                "Email":       res["email"],
-                "Kurslar":     res["kurslar"],
-                "Yakunlangan": res["yakunlangan"],
-                "Xato":        res["xato"],
+                "_RID_": row["_RID_"],
+                "Maktab": maktab,
+                "F.I.Sh.": fio,
+                "PINFL": pinfl,
+                "Tekshiruv holati": res["holat"],
+                "Saytdagi F.I.Sh.": res["ism"],
+                "Email": res["email"],
+                "Kurslar soni": res["kurslar"],
+                "Yakunlangan kurslar": res["yakunlangan"],
+                "Kurslar tafsiloti": res["kurs_tafsiloti"],
+                "Izoh": res["xato"],
             })
 
             time.sleep(DELAY_SEC)
@@ -432,24 +511,52 @@ if uploaded:
         # Statistika
         st.subheader("📊 Natijalar")
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Jami",          len(result_df))
-        c2.metric("✅ Sertifikat", (result_df["Holat"] == "✅ Sertifikat bor").sum())
-        c3.metric("⚠️ Kurs yo'q",  (result_df["Holat"].str.contains("Ro'yxatda", na=False)).sum())
-        c4.metric("❌ Topilmadi",  (result_df["Holat"] == "❌ Topilmadi").sum())
+
+        c1.metric("Jami", len(result_df))
+        c2.metric(
+            "✅ Sertifikat olgan",
+            (result_df["Tekshiruv holati"] == "✅ Sertifikat olgan").sum()
+        )
+        c3.metric(
+            "⚠️ Sertifikat olinmagan",
+            result_df["Tekshiruv holati"].str.contains(
+                "sertifikat olinmagan|kurs topilmadi",
+                case=False,
+                na=False
+            ).sum()
+        )
+        c4.metric(
+            "❌ Ro‘yxatdan o‘tmagan",
+            (result_df["Tekshiruv holati"] == "❌ PINFL ro‘yxatdan o‘tmagan").sum()
+        )
 
         st.dataframe(result_df.drop(columns=["_RID_"]), use_container_width=True)
 
         # Maktab xulosasi
         st.subheader("🏫 Maktab bo'yicha hisobot")
+
         summary = (
             result_df.groupby("Maktab")
             .agg(
                 Jami=("PINFL", "count"),
-                Sertifikat=("Holat", lambda x: (x == "✅ Sertifikat bor").sum()),
-                Kurs_yoq=("Holat", lambda x: (x.str.contains("Ro'yxatda", na=False)).sum()),
-                Topilmadi=("Holat", lambda x: (x == "❌ Topilmadi").sum()),
+                Sertifikat_olgan=(
+                    "Tekshiruv holati",
+                    lambda x: (x == "✅ Sertifikat olgan").sum()
+                ),
+                Sertifikat_olinmagan=(
+                    "Tekshiruv holati",
+                    lambda x: x.str.contains(
+                        "sertifikat olinmagan|kurs topilmadi",
+                        case=False,
+                        na=False
+                    ).sum()
+                ),
+                Royxatdan_otmagan=(
+                    "Tekshiruv holati",
+                    lambda x: (x == "❌ PINFL ro‘yxatdan o‘tmagan").sum()
+                ),
             )
-            .assign(Foiz=lambda d: (d["Sertifikat"] / d["Jami"] * 100).round(1))
+            .assign(Foiz=lambda d: (d["Sertifikat_olgan"] / d["Jami"] * 100).round(1))
             .sort_values("Foiz", ascending=False)
             .reset_index()
         )
@@ -465,3 +572,10 @@ if uploaded:
             file_name="aileaders_hisobot.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
+
+st.markdown("""
+---
+<div style="text-align:center; color:#94A3B8; font-size:14px;">
+    Developed by <b>Azamat Madrimov</b> · AI Leaders PINFL Checker
+</div>
+""", unsafe_allow_html=True)
